@@ -1,0 +1,112 @@
+name: Armar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Llave de firma fija (para poder actualizar sin desinstalar)
+        run: |
+          mkdir -p ~/.android
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add debug.keystore
+            git commit -m "Agregar llave de firma [skip ci]"
+            git push
+          fi
+          cp debug.keystore ~/.android/debug.keystore
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Preparar carpeta de la app
+        run: |
+          mkdir -p www
+          cp index.html app.js www/
+
+      - name: Crear proyecto Android
+        run: |
+          npx cap add android
+          python3 - <<'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p, encoding='utf-8').read()
+          perms = (
+            '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n'
+            '    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>\n'
+            '    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>\n'
+            '    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>\n'
+            '    <uses-permission android:name="android.permission.VIBRATE"/>\n'
+          )
+          if 'POST_NOTIFICATIONS' not in s:
+              s = s.replace('<application', perms + '    <application', 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          PY
+          npx cap sync android
+
+      - name: Poner el ícono de la app
+        run: |
+          pip install pillow
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          import os
+          res = 'android/app/src/main/res'
+          full = Image.open('icon.png').convert('RGBA')
+          fg = Image.open('icon-fg.png').convert('RGBA')
+          sizes = {'mdpi': (48, 108), 'hdpi': (72, 162), 'xhdpi': (96, 216), 'xxhdpi': (144, 324), 'xxxhdpi': (192, 432)}
+          for name, (launcher, foreground) in sizes.items():
+              d = os.path.join(res, 'mipmap-' + name)
+              os.makedirs(d, exist_ok=True)
+              sq = full.resize((launcher, launcher), Image.LANCZOS)
+              sq.save(os.path.join(d, 'ic_launcher.png'))
+              mask = Image.new('L', (launcher, launcher), 0)
+              ImageDraw.Draw(mask).ellipse((0, 0, launcher - 1, launcher - 1), fill=255)
+              rd = Image.new('RGBA', (launcher, launcher), (0, 0, 0, 0))
+              rd.paste(sq, (0, 0), mask)
+              rd.save(os.path.join(d, 'ic_launcher_round.png'))
+              fg.resize((foreground, foreground), Image.LANCZOS).save(os.path.join(d, 'ic_launcher_foreground.png'))
+          os.makedirs(os.path.join(res, 'values'), exist_ok=True)
+          open(os.path.join(res, 'values', 'ic_launcher_background.xml'), 'w').write(
+              '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#3B5BA9</color>\n</resources>\n')
+          PY
+
+      - name: Armar APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Renombrar APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk MisClientes.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MisClientes-apk
+          path: MisClientes.apk
+
+      - name: Publicar en Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta-${{ github.run_number }}
+          name: Mis Clientes beta ${{ github.run_number }}
+          prerelease: true
+          files: MisClientes.apk

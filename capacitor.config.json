@@ -1,0 +1,9 @@
+{
+  "appId": "com.misclientes.app",
+  "appName": "Mis Clientes",
+  "webDir": "www",
+  "backgroundColor": "#202124",
+  "android": {
+    "allowMixedContent": false
+  }
+}
